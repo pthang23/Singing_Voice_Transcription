@@ -12,20 +12,20 @@ Before starting, make sure you have conda or [miniconda](https://docs.conda.io/e
 conda create -n voice_transcription python=3.7
 conda activate voice_transcription
 ```
-
 First, install [Spleeter by deezer](https://github.com/deezer/spleeter) and its required system packages:
 ```bash
 conda install -c conda-forge ffmpeg libsndfile fluidsynth
 conda install numpy Cython
 pip install spleeter
 ```
-
 Then install this module and dependencies:
 ```bash
 git clone https://github.com/pthang23/Singing_Voice_Transcription
 cd Singing_Voice_Transcription
 pip install -r requirements.txt
 ```
+Finally, download pretrained models from [here](), put it in `Singing_Voice_Transcription` and unzip it. You can access all the features of our module.
+
 ## Transcribe Music
 Transcribe a single audio by running the command, output will be saved in MIDI format with the same basename as the given audio:
 ```bash
@@ -71,7 +71,7 @@ Then training from scratch or finetuning contour model:
 ```bash
 python train_contour.py -f <path/to/train/feature/folder> -i <path/to/pretrained/model>
 ```
-Once more time check `--help` command or access `defaults/vocal.yaml` if you want to view more training options
+Once more time check `--help` command or access `defaults/vocal_contour.yaml` if you want to view more training options
 
 ## Reference
 - [Omnizart](https://github.com/Music-and-Culture-Technology-Lab/omnizart) by Music and Culture Technology (MCT) Lab<br>

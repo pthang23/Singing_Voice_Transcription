@@ -1,0 +1,458 @@
+import os
+import glob
+import shutil
+import subprocess
+from os.path import join as jpath
+from collections import OrderedDict
+from datetime import datetime
+
+import sys
+MODULE_PATH = os.path.abspath(f"{os.path.split(__file__)[0]}/..")
+if sys.path[0] != MODULE_PATH: sys.path.insert(0, MODULE_PATH)
+
+import tensorflow as tf
+tf.get_logger().setLevel('ERROR')
+
+import h5py
+import numpy as np
+from spleeter.separator import Separator
+from spleeter.utils.logging import logger as sp_logger
+
+from utils import load_audio, write_yaml, get_logger, resolve_dataset_type, parallel_generator, ensure_path_exists, get_filename, LazyLoader
+from constants import datasets as d_struct
+from base import BaseTranscription, BaseDatasetLoader
+from feature.cfp import extract_vocal_cfp, _extract_vocal_cfp
+from setting_loaders import VocalSettings
+from vocal import labels as lextor
+from vocal.prediction import predict
+from vocal.inference import infer_interval, infer_midi
+from train import get_train_val_feat_file_list
+pyramid_net = LazyLoader('pyramid_net', globals(), 'models.pyramid_net')
+
+from vocal_contour.app import VocalContourTranscription
+vcapp = VocalContourTranscription(jpath(MODULE_PATH, 'defaults', 'vocal_contour.yaml'))
+
+logger = get_logger("Vocal Transcription")
+
+
+class SpleeterError(Exception):
+    """Wrapper exception class around Spleeter errors"""
+    pass
+
+
+class VocalTranscription(BaseTranscription):
+    """Application class for vocal note transcription"""
+
+    def __init__(self, conf_path=None):
+        super().__init__(VocalSettings, conf_path=conf_path)
+
+        # Disable logging information of Spleeter
+        sp_logger.setLevel(40)
+
+    def transcribe(self, input_audio, model_path=None, output="./"):
+        """Transcribe vocal notes in the audio"""
+
+        logger.info("Separating vocal track from the audio...")
+        command = ["spleeter", "separate", input_audio, "-o", "./"]
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _, error = process.communicate()
+        if process.returncode != 0:
+            raise SpleeterError(error.decode("utf-8"))
+
+        # Resolve the path of separated output files
+        folder_path = jpath("./", get_filename(input_audio))
+        vocal_wav_path = jpath(folder_path, "vocals.wav")
+        wav, fs = load_audio(vocal_wav_path)
+
+        # Clean out the output files
+        shutil.rmtree(folder_path)
+
+        logger.info("Loading model...")
+        model, model_settings = self._load_model(model_path)
+
+        logger.info("Extracting feature...")
+        feature = _extract_vocal_cfp(
+            wav,
+            fs,
+            down_fs=model_settings.feature.sampling_rate,
+            hop=model_settings.feature.hop_size,
+            fr=model_settings.feature.frequency_resolution,
+            fc=model_settings.feature.frequency_center,
+            tc=model_settings.feature.time_center,
+            g=model_settings.feature.gamma,
+            bin_per_octave=model_settings.feature.bins_per_octave
+        )
+
+        logger.info("Predicting...")
+        pred = predict(feature, model)
+
+        logger.info("Infering notes...")
+        interval = infer_interval(
+            pred,
+            ctx_len=model_settings.inference.context_length,
+            threshold=model_settings.inference.threshold,
+            min_dura=model_settings.inference.min_duration,
+            t_unit=model_settings.feature.hop_size
+        )
+
+        logger.info("Extracting pitch contour")
+        agg_f0 = vcapp.transcribe(input_audio=input_audio, model_path=model_settings.inference.pitch_model, output=output)
+
+        logger.info("Inferencing MIDI...")
+        midi = infer_midi(interval, agg_f0, t_unit=model_settings.feature.hop_size)
+
+        self._output_midi(output=output, input_audio=input_audio, midi=midi)
+        logger.info("Transcription finished")
+        return midi
+    
+    def generate_feature(self, dataset_path, vocal_settings=None, num_threads=4):
+        """Extract the feature of the whole dataset"""
+
+        settings = self._validate_and_get_settings(vocal_settings)
+
+        # Check labeled data or not
+        is_labeled = False
+        if os.path.isdir(jpath(dataset_path, 'labels')):
+            is_labeled = True
+
+        if is_labeled:
+            # Build instance mapping
+            struct = d_struct.VocalAlignStructure
+            label_extractor = lextor.VocalAlignLabelExtraction
+
+            # Fetching wav files
+            train_data = struct.get_train_data_pair(dataset_path=dataset_path)
+            test_data = struct.get_test_data_pair(dataset_path=dataset_path)
+            logger.info("Number of total training wavs: %d", len(train_data))
+            logger.info("Number of total testing wavs: %d", len(test_data))
+
+            # Resolve feature output path
+            train_feat_out_path, test_feat_out_path = self._resolve_feature_output_path(dataset_path, settings)
+            logger.info("Output training feature to %s", train_feat_out_path)
+            logger.info("Output testing feature to %s", test_feat_out_path)
+
+            # Feature extraction
+            logger.info(
+                "Start extract training feature. "
+                "This may take time to finish and affect the computer's performance.",
+            )
+            wav_paths = _vocal_separation([data[0] for data in train_data], jpath(dataset_path, "train_wavs_spleeter"))
+            train_data = _validate_order_and_get_new_pair(wav_paths, train_data)
+            _parallel_feature_extraction(train_data, label_extractor, train_feat_out_path, settings.feature, num_threads=num_threads)
+
+            # Feature extraction
+            logger.info(
+                "Start extract testing feature. "
+                "This may take time to finish and affect the computer's performance."
+            )
+            wav_paths = _vocal_separation([data[0] for data in test_data], jpath(dataset_path, "test_wavs_spleeter"))
+            test_data = _validate_order_and_get_new_pair(wav_paths, test_data)
+            _parallel_feature_extraction(test_data, label_extractor, test_feat_out_path, settings.feature, num_threads=num_threads)
+        
+            write_yaml(settings.to_json(), jpath(train_feat_out_path, ".success.yaml"))
+            write_yaml(settings.to_json(), jpath(test_feat_out_path, ".success.yaml"))
+        else:
+            # Build instance mapping
+            struct = d_struct.UnlabeledStructure
+            label_extractor = lextor.UnlabeledLabelExtraction
+
+            # Fetching wav files
+            train_data = struct.get_train_data_pair(dataset_path=dataset_path)
+            logger.info("Number of total semi training wavs: %d", len(train_data))
+
+            # Resolve feature output path
+            train_feat_out_path = self._resolve_semi_feature_output_path(dataset_path, settings)
+            logger.info("Output semi feature to %s", train_feat_out_path)
+
+            # Feature extraction
+            logger.info(
+                "Start extract semi feature. "
+                "This may take time to finish and affect the computer's performance."
+            )
+            wav_paths = _vocal_separation([data for data in train_data], jpath(dataset_path, "train_wavs_spleeter"))
+            train_data = _semi_validate_order_and_get_new_pair(wav_paths, train_data)
+            _semi_parallel_feature_extraction(train_data, label_extractor, train_feat_out_path, settings.feature, num_threads=num_threads)
+
+            write_yaml(settings.to_json(), jpath(train_feat_out_path, ".success.yaml"))
+        logger.info("All done")
+
+    def train(self, feature_folder, semi_feature_folder=None, model_name=None, input_model_path=None, vocal_settings=None):
+        """Train model"""
+
+        settings = self._validate_and_get_settings(vocal_settings)
+
+        if input_model_path is not None:
+            logger.info("Continue to train on model: %s", input_model_path)
+            model, prev_set = self._load_model(input_model_path)
+            settings.model.save_path = prev_set.model.save_path
+
+        logger.info("Constructing dataset instance")
+        split = settings.training.steps / (settings.training.steps + settings.training.val_steps)
+        train_feat_files, val_feat_files = get_train_val_feat_file_list(feature_folder, split=split)
+
+        output_types = (tf.float32, tf.float32)
+        output_shapes = ((settings.training.context_length*2 + 1, 174, 9), (19, 6))
+        train_dataset = VocalDatasetLoader(
+                ctx_len=settings.training.context_length,
+                feature_files=train_feat_files,
+                num_samples=settings.training.epoch * settings.training.batch_size * settings.training.steps
+            ) \
+            .get_dataset(settings.training.batch_size, output_types=output_types, output_shapes=output_shapes)
+
+        val_dataset = VocalDatasetLoader(
+                ctx_len=settings.training.context_length,
+                feature_files=val_feat_files,
+                num_samples=settings.training.epoch * settings.training.val_batch_size * settings.training.val_steps
+            ) \
+            .get_dataset(settings.training.val_batch_size, output_types=output_types, output_shapes=output_shapes)
+        if semi_feature_folder is not None:
+            # Semi-supervise learning dataset.
+            feat_files = glob.glob(f"{semi_feature_folder}/*.hdf")
+            semi_dataset = VocalDatasetLoader(
+                    is_labeled = False,
+                    ctx_len=settings.training.context_length,
+                    feature_files=feat_files,
+                    num_samples=settings.training.epoch * settings.training.batch_size * settings.training.steps
+                ) \
+                .get_dataset(settings.training.batch_size, output_types=(output_types[0]), output_shapes=(output_shapes[0]))
+            train_dataset = tf.data.Dataset.zip((train_dataset, semi_dataset))
+
+        if input_model_path is None:
+            logger.info("Constructing new model")
+            model = self.get_model(settings)
+
+        optimizer = tf.keras.optimizers.Adam(learning_rate=settings.training.init_learning_rate)
+        model.compile(optimizer=optimizer, loss='bce', metrics=['accuracy', 'binary_accuracy'])
+
+        logger.info("Resolving model output path")
+        if model_name is None:
+            model_name = str(datetime.now()).replace(" ", "-").replace(":", "_")
+        if not model_name.startswith(settings.model.save_prefix):
+            model_name = settings.model.save_prefix + "_" + model_name
+        model_save_path = jpath(settings.model.save_path, model_name)
+        ensure_path_exists(model_save_path)
+        write_yaml(settings.to_json(), jpath(model_save_path, "configurations.yaml"))
+        logger.info("Model output to: %s", model_save_path)
+
+        logger.info("Constructing callbacks")
+        callbacks = [
+            tf.keras.callbacks.EarlyStopping(patience=settings.training.early_stop, monitor="val_loss"),
+            tf.keras.callbacks.ModelCheckpoint(model_save_path, monitor="val_loss")
+        ]
+        logger.info("Callback list: %s", callbacks)
+
+        logger.info("Start training")
+        history = model.fit(
+            train_dataset,
+            validation_data=val_dataset,
+            epochs=settings.training.epoch,
+            steps_per_epoch=settings.training.steps,
+            validation_steps=settings.training.val_steps,
+            callbacks=callbacks,
+            use_multiprocessing=True,
+            workers=8
+        )
+        return model_save_path, history
+
+    def get_model(self, settings):
+        """Get the Pyramid model"""
+
+        return pyramid_net.PyramidNet(
+            out_classes=6,
+            min_kernel_size=settings.model.min_kernel_size,
+            depth=settings.model.depth,
+            alpha=settings.model.alpha,
+            shakedrop=settings.model.shake_drop,
+            semi_loss_weight=settings.model.semi_loss_weight,
+            semi_xi=settings.model.semi_xi,
+            semi_epsilon=settings.model.semi_epsilon,
+            semi_iters=settings.model.semi_iterations
+        )
+
+
+def _validate_order_and_get_new_pair(wav_paths, data_pair):
+    wavs = [os.path.basename(wav) for wav in wav_paths]
+    ori_wavs = [os.path.basename(data[0]) for data in data_pair]
+    assert wavs == ori_wavs
+    return [(wav_path, label_path) for wav_path, (_, label_path) in zip(wav_paths, data_pair)]
+
+# For semi features
+def _semi_validate_order_and_get_new_pair(wav_paths, data_pair):
+    wavs = [os.path.basename(wav) for wav in wav_paths]
+    ori_wavs = [os.path.basename(data) for data in data_pair]
+    assert wavs == ori_wavs
+
+    return [(wav_path) for wav_path, _ in zip(wav_paths, data_pair)]
+
+
+def _vocal_separation(wav_list, out_folder):
+    wavs = OrderedDict({os.path.basename(wav): wav for wav in wav_list})
+    if os.path.exists(out_folder):
+        # There are already some separated audio.
+        sep_wavs = set(os.listdir(out_folder))
+        diff_wavs = set(wavs.keys()) - sep_wavs
+        logger.debug("Audio to be separated: %s", diff_wavs)
+
+        # Check the difference of the separated audio and the received audio list.
+        done_wavs = set(wavs.keys()) - diff_wavs
+        wavs_copy = wavs.copy()
+        for dwav in done_wavs:
+            del wavs_copy[dwav]
+        wav_list = list(wavs_copy.values())
+
+    out_list = [jpath(out_folder, wav) for wav in wavs]
+    if len(wav_list) > 0:
+        separator = Separator('spleeter:2stems')
+        separator._params["stft_backend"] = "librosa"
+        for idx, wav_path in enumerate(wav_list, 1):
+            logger.info("Separation Progress: %d/%d - %s", idx, len(wav_list), wav_path)
+            separator.separate_to_file(wav_path, out_folder)
+
+            # The separated tracks are stored in sub-folders.
+            # Move the vocal track to the desired folder and rename them.
+            fname, _ = os.path.splitext(os.path.basename(wav_path))
+            sep_folder = jpath(out_folder, fname)
+            vocal_track = jpath(sep_folder, "vocals.wav")
+            shutil.move(vocal_track, jpath(out_folder, fname + ".wav"))
+            shutil.rmtree(sep_folder)
+    return out_list
+
+
+def _all_in_one_extract(data_pair, label_extractor, t_unit, **feat_kargs):
+    wav, label = data_pair
+    logger.debug("Extracting vocal CFP feature")
+    feature = extract_vocal_cfp(wav, **feat_kargs)
+    logger.debug("Extracting label")
+    label = label_extractor.extract_label(label, t_unit=t_unit)
+    return feature, label
+
+# For semi features
+def _semi_all_in_one_extract(data_pair, label_extractor, t_unit, **feat_kargs):
+    wav = data_pair
+    logger.debug("Extracting vocal CFP feature")
+    feature = extract_vocal_cfp(wav, **feat_kargs)
+    return feature
+
+
+def _parallel_feature_extraction(
+    data_pair, label_extractor, out_path, feat_settings, num_threads=4
+):
+    feat_extract_params = {
+        "hop": feat_settings.hop_size,
+        "fr": feat_settings.frequency_resolution,
+        "fc": feat_settings.frequency_center,
+        "tc": feat_settings.time_center,
+        "g": feat_settings.gamma,
+        "bin_per_octave": feat_settings.bins_per_octave
+    }
+
+    iters = enumerate(
+        parallel_generator(
+            _all_in_one_extract,
+            data_pair,
+            max_workers=num_threads,
+            chunk_size=num_threads,
+            label_extractor=label_extractor,
+            t_unit=feat_settings.hop_size,
+            **feat_extract_params
+        )
+    )
+    for idx, ((feature, label), audio_idx) in iters:
+        audio = data_pair[audio_idx][0]
+        logger.info("Progress: %s/%s - %s", idx + 1, len(data_pair), audio)
+
+        # Trim to the same length
+        max_len = min(len(feature), len(label))
+        feature = feature[:max_len]
+        label = label[:max_len]
+
+        basename = os.path.basename(audio)
+        filename, _ = os.path.splitext(basename)
+        out_hdf = jpath(out_path, filename + ".hdf")
+        with h5py.File(out_hdf, "w") as out_f:
+            out_f.create_dataset("feature", data=feature, compression="gzip", compression_opts=3)
+            out_f.create_dataset("label", data=label, compression="gzip", compression_opts=3)
+
+# For semi features
+def _semi_parallel_feature_extraction(data_pair, label_extractor, out_path, feat_settings, num_threads=4):
+    feat_extract_params = {
+        "hop": feat_settings.hop_size,
+        "fr": feat_settings.frequency_resolution,
+        "fc": feat_settings.frequency_center,
+        "tc": feat_settings.time_center,
+        "g": feat_settings.gamma,
+        "bin_per_octave": feat_settings.bins_per_octave
+    }
+
+    iters = enumerate(
+        parallel_generator(
+            _semi_all_in_one_extract,
+            data_pair,
+            max_workers=num_threads,
+            chunk_size=num_threads,
+            label_extractor=label_extractor,
+            t_unit=feat_settings.hop_size,
+            **feat_extract_params
+        )
+    )
+    for idx, ((feature), audio_idx) in iters:
+        audio = data_pair[audio_idx]
+        logger.info("Progress: %s/%s - %s", idx + 1, len(data_pair), audio)
+
+        basename = os.path.basename(audio)
+        filename, _ = os.path.splitext(basename)
+        out_hdf = jpath(out_path, filename + ".hdf")
+        with h5py.File(out_hdf, "w") as out_f:
+            out_f.create_dataset("feature", data=feature, compression="gzip", compression_opts=3)
+
+
+class VocalDatasetLoader(BaseDatasetLoader):
+    """Dataset loader of 'vocal' module"""
+
+    def __init__(self, is_labeled=True, ctx_len=9, feature_folder=None, feature_files=None, num_samples=100, slice_hop=1):
+        super().__init__(
+            is_labeled=is_labeled,
+            feature_folder=feature_folder,
+            feature_files=feature_files,
+            num_samples=num_samples,
+            slice_hop=slice_hop
+        )
+        self.ctx_len = ctx_len
+
+    def _get_feature(self, hdf_name, slice_start):
+        feat = self.hdf_refs[hdf_name]["feature"]
+
+        pad_left = 0
+        if slice_start - self.ctx_len < 0:
+            pad_left = self.ctx_len - slice_start
+
+        pad_right = 0
+        if slice_start + self.ctx_len + 1 > len(feat):
+            pad_right = slice_start + self.ctx_len + 1 - len(feat)
+
+        start = max(slice_start - self.ctx_len, 0)
+        end = min(slice_start + self.ctx_len + 1, len(feat))
+        feat = feat[start:end]
+        if (pad_left > 0) or (pad_right > 0):
+            feat = np.pad(feat, ((pad_left, pad_right), (0, 0), (0, 0)))
+
+        return feat  # Time x Freq x 9
+
+    def _get_label(self, hdf_name, slice_start):
+        label = self.hdf_refs[hdf_name]["label"]
+
+        pad_left = 0
+        if slice_start - self.ctx_len < 0:
+            pad_left = self.ctx_len - slice_start
+
+        pad_right = 0
+        if slice_start + self.ctx_len + 1 > len(label):
+            pad_right = slice_start + self.ctx_len + 1 - len(label)
+
+        start = max(slice_start - self.ctx_len, 0)
+        end = min(slice_start + self.ctx_len + 1, len(label))
+        label = label[start:end]
+        if (pad_left > 0) or (pad_right > 0):
+            label = np.pad(label, ((pad_left, pad_right), (0, 0)))
+
+        return label  # Time x 6

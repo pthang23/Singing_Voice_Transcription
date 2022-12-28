@@ -1,10 +1,7 @@
 # Singing Voice Transcription
-Singing Voice Transcription is a module that aim to automatic transcript singing voice into music note. Given a polyphonic music, it is able to find and extract main melody at note-level from that music singing voice.
+Singing Voice Transcription is a module that aim to automatic transcript singing voice into music note. Given a polyphonic music, it is able to find and extract main melody at note-level from that music singing voice. You can find some demo samples [here]().
 
 This module is referenced and improved from a part of [Omnizart](https://github.com/Music-and-Culture-Technology-Lab/omnizart) by [Music and Culture Technology (MCT) Lab](https://github.com/Music-and-Culture-Technology-Lab).
-
-## Demo
-We provide some demos to help you understand more clearly how this module work:<br>
 
 ## Installation
 Before starting, make sure you have conda or [miniconda](https://docs.conda.io/en/latest/miniconda.html) installed, then create new environment:

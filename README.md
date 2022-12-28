@@ -24,7 +24,7 @@ git clone https://github.com/pthang23/Singing_Voice_Transcription
 cd Singing_Voice_Transcription
 pip install -r requirements.txt
 ```
-Finally, download pretrained models from [here](), put it in `Singing_Voice_Transcription` and unzip it. You can access all the features of our module.
+Finally, download pretrained models from [here](), put in `Singing_Voice_Transcription` and unzip it. Then you can access all the module features.
 
 ## Transcribe Music
 Transcribe a single audio by running the command, output will be saved in MIDI format with the same basename as the given audio:

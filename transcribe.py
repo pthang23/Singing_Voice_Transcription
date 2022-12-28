@@ -1,7 +1,7 @@
 # Add arguments
 import argparse
 ap = argparse.ArgumentParser()
-ap.add_argument('-i', '--input', required=True, help='Path to input audio (wav, mp3)')
+ap.add_argument('-i', '--input', required=True, help='Path to input audio (wav)')
 ap.add_argument('-o', '--output', required=False, help='Path to the folder will contain predictions')
 ap.add_argument('-m', '--model', required=False, help='Path to the transcribe model')
 args = ap.parse_args()

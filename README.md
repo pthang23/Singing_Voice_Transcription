@@ -13,7 +13,7 @@ First, install [Spleeter by deezer](https://github.com/deezer/spleeter) and its 
 ```bash
 conda install -c conda-forge ffmpeg libsndfile fluidsynth
 conda install numpy Cython
-pip install spleeter
+pip install spleeter==2.3.0
 ```
 Then install this module and dependencies:
 ```bash

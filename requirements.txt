@@ -13,7 +13,6 @@ click==7.1.2
 colorama==0.4.4
 contextvars==2.4
 cython==0.29.24
-dataclasses==0.8
 decorator==5.1.0
 ffmpeg-python==0.2.0
 flatbuffers==1.12
@@ -75,7 +74,6 @@ scipy==1.5.4
 six==1.15.0
 sniffio==1.2.0
 soundfile==0.10.3.post1
-spleeter==2.3.0
 tensorboard-data-server==0.6.1
 tensorboard-plugin-wit==1.8.0
 tensorboard==2.7.0

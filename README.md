@@ -1,5 +1,5 @@
 # Singing Voice Transcription
-Singing Voice Transcription is a module that aim to automatic transcript singing voice into music note. Given a polyphonic music, it is able to find and extract main melody at note-level from that music singing voice. You can find some demo samples [here]().
+Singing Voice Transcription is a module that aim to automatic transcript singing voice into music note. Given a polyphonic music, it is able to find and extract main melody at note-level from that music singing voice. You can find some demo samples [here](https://drive.google.com/drive/folders/1o-FqYGEZao_5H8FRuiHVoU4RqJQnFOBo?usp=sharing).
 
 This module is referenced and improved from a part of [Omnizart](https://github.com/Music-and-Culture-Technology-Lab/omnizart) by [Music and Culture Technology (MCT) Lab](https://github.com/Music-and-Culture-Technology-Lab).
 
@@ -21,7 +21,7 @@ git clone https://github.com/pthang23/Singing_Voice_Transcription
 cd Singing_Voice_Transcription
 pip install -r requirements.txt
 ```
-Finally, download pretrained models from [here](), put in `Singing_Voice_Transcription` and unzip it. Then you can access all the module features.
+Finally, download pretrained models from [here](https://drive.google.com/file/d/1y3M_rutkUW5xvp88z8eoFyzRbKwRhfa3/view?usp=sharing), put in `Singing_Voice_Transcription` and unzip it. Then you can access all the module features.
 
 ## Transcribe Music
 Transcribe a single audio by running the command, output will be saved in MIDI format with the same basename as the given audio:

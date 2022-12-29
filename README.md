@@ -1,5 +1,5 @@
 # Singing Voice Transcription
-Singing Voice Transcription is a module that aim to automatic transcript singing voice into music note. Given a polyphonic music, it is able to find and extract main melody at note-level from that music singing voice. You can find some demo samples [here](https://drive.google.com/drive/folders/1o-FqYGEZao_5H8FRuiHVoU4RqJQnFOBo?usp=sharing).
+Singing Voice Transcription is a module that aim to automatic transcript singing voice into music note. Given a polyphonic music, it is able to find and extract main melody at note-level from this music singing voice. You can find some demo samples [here](https://drive.google.com/drive/folders/1o-FqYGEZao_5H8FRuiHVoU4RqJQnFOBo?usp=sharing).
 
 This module is referenced and improved from a part of [Omnizart](https://github.com/Music-and-Culture-Technology-Lab/omnizart) by [Music and Culture Technology (MCT) Lab](https://github.com/Music-and-Culture-Technology-Lab).
 

@@ -159,7 +159,7 @@ class PyramidNet(tf.keras.Model):
         self.loss_tracker = tf.keras.metrics.Mean(name="loss")
 
         if (depth - 2) % 6 != 0:
-            raise ValueError(f"Value of 'depth' should be one of [20, 32, 44, 56, 110, 1202]. Received: {depth}.")
+            raise ValueError(f"Value of 'depth' - 2 should be divisible by 6. Received: {depth}.")
 
         n_units = (depth - 2) // 6
         self.kernel_sizes = [min_kernel_size] + list(map(

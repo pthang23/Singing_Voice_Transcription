@@ -259,24 +259,6 @@ class BaseDatasetLoader:
 
         logger.info("Total samples: %s", len(self.start_idxs))
 
-    # def __iter__(self):
-    #     for _ in range(self.num_samples):
-    #         if len(self.start_idxs) == 0:
-    #             # Shuffle the indexes after visiting all the samples in the dataset.
-    #             self.start_idxs = list(range(0, self.total_length, self.slice_hop))
-    #             if self.cut_idx > 0:
-    #                 self.start_idxs = self.start_idxs[:-self.cut_idx]
-    #             random.shuffle(self.start_idxs)
-
-    #         start_idx = self.start_idxs.pop()
-    #         hdf_name, slice_start = self.idx_to_hdf_map[start_idx]
-
-    #         feat = self._get_feature(hdf_name, slice_start)
-    #         label = self._get_label(hdf_name, slice_start)
-    #         feat, label = self._pre_yield(feat, label)
-
-    #         yield feat, label
-
     def __iter__(self):
         for _ in range(self.num_samples):
             if len(self.start_idxs) == 0:
